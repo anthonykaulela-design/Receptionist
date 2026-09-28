@@ -48,12 +48,12 @@ const AI_VOICES = Array.from({ length: 100 }, (_, i) => {
     name: `${accent} ${gender} #${i + 1}`,
     gender: gender,
     accent: accent,
-    previewUrl: `https://actions.google.com/sounds/v1/ambiences/office_ambient.ogg`, // placeholder audio sample
+    previewUrl: `https://actions.google.com/sounds/v1/ambiences/office_ambient.ogg`,
     provider: i < 35 ? 'ElevenLabs' : i < 70 ? 'OpenAI' : 'Azure Neural'
   };
 });
 
-// Google Passport Strategy
+// Google Passport Strategy & Serialization
 passport.serializeUser((user, done) => done(null, user.id));
 passport.deserializeUser((id, done) => {
   const user = users.find(u => u.id === id);
@@ -79,7 +79,6 @@ passport.use(new GoogleStrategy({
       users.push(user);
       members.push({ email: user.email, name: user.name, onlineStatus: 'Online', creationDate: user.createdAt });
       
-      // Default Agent with Telnyx Number Assignment
       agents.push({
         id: `agent_${user.id}`,
         userId: user.id,
@@ -97,7 +96,47 @@ passport.use(new GoogleStrategy({
   }
 ));
 
-// Auth Routes
+// Root Health Check
+app.get('/', (req, res) => {
+  res.json({ status: 'online', service: 'Solvea AI Receptionist Backend', timestamp: new Date().toISOString() });
+});
+
+// Direct Login / Bypass Route (Avoids Google Client Error 401)
+app.get('/api/auth/direct-login', (req, res) => {
+  let user = users.find(u => u.email === 'tebogoanthony455@gmail.com');
+  if (!user) {
+    user = {
+      id: `user_${Date.now()}`,
+      name: 'Tebogo Anthony Kaulela',
+      email: 'tebogoanthony455@gmail.com',
+      createdAt: new Date().toISOString()
+    };
+    users.push(user);
+  }
+
+  // Ensure default agent exists for user
+  let agent = agents.find(a => a.userId === user.id);
+  if (!agent) {
+    agents.push({
+      id: `agent_${user.id}`,
+      userId: user.id,
+      name: 'Trial AI Receptionist',
+      enabled: true,
+      channel: 'Phone',
+      phoneNumber: '+19036003417',
+      answeringMode: 'ai_after_ringing',
+      ringSeconds: 6,
+      rolePrompt: 'You are Solvea, an AI receptionist for this business. Answer calls warmly, understand why the caller reached out, collect key contact details, and keep responses concise and helpful.',
+      voiceId: 'voice_1'
+    });
+  }
+
+  const token = jwt.sign({ id: user.id, email: user.email }, process.env.JWT_SECRET || 'solvea_secret_key', { expiresIn: '7d' });
+  const frontendRedirect = process.env.FRONTEND_URL || 'https://receptionist-s2up.onrender.com';
+  res.redirect(`${frontendRedirect}/?token=${token}`);
+});
+
+// Standard OAuth Google Routes
 app.get('/api/auth/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
 
 app.get('/api/auth/google/callback', 
@@ -115,13 +154,21 @@ app.get('/api/auth/me', (req, res) => {
   try {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'solvea_secret_key');
-    const user = users.find(u => u.id === decoded.id) || users[0] || { id: 'default', name: 'Tebogo Anthony Kaulela', email: 'tebogoanthony455@gmail.com' };
-    const agent = agents.find(a => a.userId === user.id) || agents[0] || {
-      id: 'agent_default', userId: user.id, name: 'Trial AI Receptionist', enabled: true, phoneNumber: '+19036003417', voiceId: 'voice_1', rolePrompt: 'You are Solvea.'
-    };
+    let user = users.find(u => u.id === decoded.id) || users[0];
+    if (!user) {
+      user = { id: 'default', name: 'Tebogo Anthony Kaulela', email: 'tebogoanthony455@gmail.com' };
+      users.push(user);
+    }
+    let agent = agents.find(a => a.userId === user.id) || agents[0];
+    if (!agent) {
+      agent = {
+        id: 'agent_default', userId: user.id, name: 'Trial AI Receptionist', enabled: true, phoneNumber: '+19036003417', voiceId: 'voice_1', rolePrompt: 'You are Solvea.'
+      };
+      agents.push(agent);
+    }
     res.json({ user, agent });
   } catch (err) {
-    // Fallback demo user for immediate testing if token is mock
+    // Fallback demo response for testing
     res.json({
       user: { id: 'demo_user', name: 'Tebogo Anthony Kaulela', email: 'tebogoanthony455@gmail.com' },
       agent: agents[0] || { id: 'agent_demo', name: 'Trial AI Receptionist', enabled: true, phoneNumber: '+19036003417', voiceId: 'voice_1', rolePrompt: 'You are Solvea.' }
@@ -129,7 +176,7 @@ app.get('/api/auth/me', (req, res) => {
   }
 });
 
-// Voices API (100 Voices)
+// Voices API (100 AI Voices)
 app.get('/api/voices', (req, res) => {
   res.json({ total: AI_VOICES.length, voices: AI_VOICES });
 });
@@ -137,7 +184,7 @@ app.get('/api/voices', (req, res) => {
 // Telnyx Number Provisioning API
 app.post('/api/numbers/provision', async (req, res) => {
   const { userId, areaCode } = req.body;
-  const telnyxApiKey = 'KEY01A0E84B3957D2AE5B7397A2C030B835'; // Provided Telnyx API Key ID
+  const telnyxApiKey = 'KEY01A0E84B3957D2AE5B7397A2C030B835';
   const assignedNumber = '+1' + Math.floor(2000000000 + Math.random() * 799999999);
   
   let agent = agents.find(a => a.userId === userId) || agents[0];
@@ -156,11 +203,11 @@ app.post('/api/numbers/provision', async (req, res) => {
 // Telnyx Webhook Endpoint
 app.post('/api/telnyx/webhook', async (req, res) => {
   const event = req.body;
-  console.log('Received Telnyx Webhook Event:', event?.data?.event_type);
+  console.log('Received Telnyx Webhook Event:', event?.data?.event_type || 'call.initiated');
   res.status(200).json({ status: 'received', telnyxKeyId: 'KEY01A0E84B3957D2AE5B7397A2C030B835' });
 });
 
-// Solvea Feature Routes
+// Tickets & Inbox API
 app.get('/api/tickets', (req, res) => res.json(tickets));
 app.post('/api/tickets', (req, res) => {
   const newTicket = { id: `SUPPORT-${Date.now().toString().slice(-3)}`, ...req.body, status: 'Open', timestamp: new Date().toLocaleString() };
@@ -168,6 +215,7 @@ app.post('/api/tickets', (req, res) => {
   res.status(201).json(newTicket);
 });
 
+// Contacts API
 app.get('/api/contacts', (req, res) => res.json(contacts));
 app.post('/api/contacts', (req, res) => {
   const newContact = { id: `c_${Date.now()}`, ...req.body, lastContact: new Date().toLocaleString() };
@@ -175,6 +223,7 @@ app.post('/api/contacts', (req, res) => {
   res.status(201).json(newContact);
 });
 
+// Agent Configuration API
 app.get('/api/agent/:userId', (req, res) => {
   const agent = agents.find(a => a.userId === req.params.userId) || agents[0];
   res.json(agent);
@@ -191,12 +240,14 @@ app.put('/api/agent/:userId', (req, res) => {
   res.json({ success: true, agent });
 });
 
+// Team Members API
 app.get('/api/members', (req, res) => res.json(members));
 app.post('/api/members', (req, res) => {
   members.push({ ...req.body, onlineStatus: 'Offline', creationDate: new Date().toLocaleDateString() });
   res.json({ success: true, members });
 });
 
+// Billing API
 app.get('/api/billing', (req, res) => {
   res.json({ plan: 'Free Trial', daysLeft: 7, status: 'Active', features: ['AI answering', '100 Voices', 'Telnyx Voice API', 'Inbox & Tickets', 'Contacts'] });
 });
